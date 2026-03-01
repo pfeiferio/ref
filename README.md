@@ -2,12 +2,13 @@
 
 > A minimal mutable reference primitive with change notifications.
 
-[![npm version](https://badge.fury.io/js/%40pfeiferio%2Fref.svg)](https://www.npmjs.com/package/@pfeiferio/ref)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue.svg)](https://www.typescriptlang.org/)
+[![npm version](https://img.shields.io/npm/v/@pfeiferio/ref.svg)](https://www.npmjs.com/package/@pfeiferio/ref)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.2+-blue.svg)](https://www.typescriptlang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org/)
+[![codecov](https://codecov.io/gh/pfeiferio/ref/branch/main/graph/badge.svg)](https://codecov.io/gh/pfeiferio/ref)
 
-This package provides a small, explicit `Ref` abstraction for sharing and observing mutable state.
+A small, explicit `Ref` abstraction for holding and observing mutable state.
 It is **not** a reactive framework and intentionally avoids schedulers, dependency tracking, or magic.
 
 ---
@@ -15,9 +16,10 @@ It is **not** a reactive framework and intentionally avoids schedulers, dependen
 ## Features
 
 - Explicit mutable references
-- Change notifications via events
-- Deep equality comparison for updates
-- Idempotent `ref()` creation
+- Change notifications via `on` / `off` / `once`
+- Deep equality comparison — no event fired if value did not change
+- Recursive `unref()` unwrapping
+- `[Symbol.dispose]` support for explicit cleanup
 - No dependencies (Node.js only)
 
 ---
@@ -26,13 +28,13 @@ It is **not** a reactive framework and intentionally avoids schedulers, dependen
 
 ```bash
 npm install @pfeiferio/ref
-````
+```
 
 ---
 
 ## Basic Usage
 
-```js
+```ts
 import {ref} from '@pfeiferio/ref'
 
 const count = ref(0)
@@ -41,35 +43,47 @@ count.on('update', (next, prev) => {
   console.log(prev, '→', next)
 })
 
-count.value++
+count.value = 1 // 0 → 1
+count.value = 1 // no event — value unchanged
 ```
 
 ---
 
 ## `ref()`
 
-Creates a new `Ref` instance.
+Creates a new `Ref` instance. Always returns a new instance — no idempotency, no implicit aliasing.
 
-If the passed value is already a `Ref`, the same instance is returned.
-
-```js
+```ts
 const a = ref(1)
-const b = ref(a)
+const b = ref(1)
 
-a === b // true
+a === b // false — always distinct instances
 ```
 
-This guarantees **reference identity** and avoids accidental duplication of state.
+If a `Ref` is passed as value, it is unwrapped first:
+
+```ts
+const a = ref(1)
+const b = ref(a) // Ref<number>, not Ref<Ref<number>>
+
+b.value // 1
+a.value = 99
+b.value // 1 — b is independent
+```
+
+If you want to share state, pass the same instance around directly.
 
 ---
 
 ## `unref()`
 
-Extracts the value from a `Ref`, or returns the value unchanged if it is not a `Ref`.
+Unwraps a `Ref` to its value. If the value is not a `Ref`, it is returned as-is.
+Unwrapping is recursive — nested `Ref`s are fully resolved.
 
-```js
-unref(1)         // 1
-unref(ref(1))   // 1
+```ts
+unref(1)                  // 1
+unref(ref(1))             // 1
+unref(ref(ref(ref(1))))   // 1
 ```
 
 ---
@@ -78,7 +92,7 @@ unref(ref(1))   // 1
 
 Type guard for checking whether a value is a `Ref`.
 
-```js
+```ts
 if (isRef(x)) {
   console.log(x.value)
 }
@@ -86,34 +100,66 @@ if (isRef(x)) {
 
 ---
 
-## Cloning
+## Events
 
-If you want an **independent copy** of a `Ref`, this must be done explicitly.
+`Ref` exposes a minimal event API. Only `'update'` is emitted, and only when the value actually changed.
+Deep equality is used for objects, arrays, and dates.
 
-```js
-const a = ref(1)
-const b = cloneRef(a)
+```ts
+const r = ref({a: 1})
 
-b.value = 2
-a.value // 1
+const listener = (next, prev) => console.log(prev, '→', next)
+
+r.on('update', listener)
+r.once('update', listener)
+r.off('update', listener)
 ```
 
-Deep cloning is also available:
+`Ref` does **not** extend `EventEmitter` — only these three methods are part of the public API.
 
-```js
-const c = cloneRefDeep(a)
+---
+
+## Updates
+
+Updates must always be applied by replacing the entire value. Direct mutation of nested objects will **not** trigger
+events.
+
+```ts
+const r = ref({a: {b: 1}})
+
+r.value.a.b = 2       // silent — no event fired
+r.value = {...r.value, a: {b: 2}} // fires event
+```
+
+---
+
+## Cleanup
+
+`Ref` implements `Symbol.dispose` for use with the `using` keyword (TypeScript 5.2+, Node.js 20+).
+
+```ts
+{
+  using r = ref(0)
+  r.on('update', () => { ...
+  })
+} // all listeners removed automatically
+```
+
+Or manually:
+
+```ts
+r[Symbol.dispose]()
 ```
 
 ---
 
 ## Semantics
 
-* A `Ref` represents **identity**, not a container
-* `ref()` is idempotent
-* State sharing is always explicit
-* Copying state is never implicit
-
-This package is intended as a **low-level primitive** for controlled state handling.
+- `ref()` always creates a new instance
+- State sharing is always explicit — pass the same instance
+- Copying state is always explicit — use `structuredClone` or spread
+- No implicit linking between `Ref` instances
+- No schedulers, no dependency tracking, no magic
 
 ---
 
